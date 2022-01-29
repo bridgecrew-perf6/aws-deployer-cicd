@@ -1,0 +1,979 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Data Quality CICD stack
+
+Parameters:
+  stage:
+    Default: all
+    Type: String
+    Description: Stage Name
+    AllowedValues:
+    - all
+    - prd
+    - qa
+    - dev
+    - sbx
+
+  projectName:
+    Default: /aws-deployer/projectName
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: Project Name SSM Parameter
+
+  deploymentBucketName:
+    Default: /aws-deployer/deploymentBucketName
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: Lambda S3 Bucket name SSM Parameter
+  
+  artifactBucketName:
+    Default: /aws-deployer/artifactBucketName
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: Lambda S3 Bucket name SSM Parameter
+
+  codePipelineSourceBucketName:
+    Default: /aws-deployer/codePipelineSourceBucketName
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: Lambda S3 Bucket name SSM Parameter
+
+  buildImage:
+    Default: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+    # Default: aws/codebuild/python:3.6.5
+    Type: String
+    Description: CodeBuild image to use
+
+  crossAccountRequiments:
+    Default: "no"
+    Type: String
+    Description: This template is deploying on cross account?
+    AllowedValues:
+    - "no"
+    - "yes"
+  
+
+Conditions:
+  deploymentAccount: !Equals [ !Ref crossAccountRequiments , "no" ]
+  crossAccount: !Equals [ !Ref crossAccountRequiments , "yes" ]
+
+  sbxBootstraped: !Equals [ !FindInMap [ stages, sbx, bootstrapped ] , "true"]
+  sbxBootstrapedOnDeploymentAccount: !And [ !Condition sbxBootstraped, !Condition deploymentAccount ]
+  devBootstraped: !Equals [ !FindInMap [ stages, dev, bootstrapped ] , "true"]
+  devBootstrapedOnDeploymentAccount: !And [ !Condition devBootstraped, !Condition deploymentAccount ]
+  qaBootstraped: !Equals [ !FindInMap [ stages, qa, bootstrapped ] , "true"]
+  qaBootstrapedOnDeploymentAccount: !And [ !Condition qaBootstraped, !Condition deploymentAccount ]
+  prdBootstraped: !Equals [ !FindInMap [ stages, prd, bootstrapped ] , "true"]
+  prdBootstrapedOnDeploymentAccount: !And [ !Condition prdBootstraped, !Condition deploymentAccount ]
+
+  anyBootstraped: !Or
+  - !Condition sbxBootstraped
+  - !Condition devBootstraped
+  - !Condition qaBootstraped
+  - !Condition prdBootstraped
+
+  anyBootstrapedOnDeploymentAccount: !And
+  - !Condition anyBootstraped
+  - !Condition deploymentAccount
+
+Mappings:
+  stages:
+    sbx:
+      accountId: 749918991571
+      region: eu-west-1
+      bootstrapped: "false"
+      prefix: "aws-deployer"
+    dev:
+      accountId: 749918991571
+      region: eu-west-1
+      bootstrapped: "false"
+      prefix: "aws-deployer"
+    qa:
+      accountId: 749918991571
+      region: us-east-1
+      bootstrapped: "false"
+      prefix: "aws-deployer"
+    prd:
+      accountId: 749918991571
+      region: eu-west-2
+      bootstrapped: "false"
+      prefix: "aws-deployer"
+    all:
+      accountId: 749918991571
+      region: eu-central-1
+      bootstrapped: "false"
+      prefix: "aws-deployer"
+
+Resources:
+  artifactBucket:
+    Type: AWS::S3::Bucket
+    Condition: deploymentAccount
+    Properties:
+      BucketName: !Sub ${artifactBucketName}-${stage}
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+        - Id: DeleteNoncurrentVersionIn7Days
+          Status: Enabled
+          NoncurrentVersionExpirationInDays: 7
+
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption: 
+        ServerSideEncryptionConfiguration: 
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref sourceBucketKey
+  
+  artifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: anyBootstrapedOnDeploymentAccount
+    Properties: 
+      Bucket: !Ref artifactBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - !If 
+            - sbxBootstraped
+            - Sid: sbxAccess
+              Effect: Allow
+              Principal:
+                AWS:
+                  - !Sub 
+                    - arn:aws:iam::${accountId}:role/${prefix}-codepipeline-role-${region}
+                    - accountId: !FindInMap [ stages, sbx, accountId ]
+                      region: !FindInMap [ stages, sbx, region ]
+                      prefix: !FindInMap [ stages, sbx, prefix ]
+                  - !Sub 
+                    - arn:aws:iam::${accountId}:role/${prefix}-codebuild-role-${region}
+                    - accountId: !FindInMap [ stages, sbx, accountId ]
+                      region: !FindInMap [ stages, sbx, region ]
+                      prefix: !FindInMap [ stages, sbx, prefix ]
+              Action:
+                - s3:Get*
+                - s3:Put*
+                - s3:ListBucket
+              Resource: 
+                - !Sub ${artifactBucket.Arn}/*
+                - !Sub ${artifactBucket.Arn}
+            - !Ref AWS::NoValue
+          
+          - !If 
+            - devBootstraped
+            - Sid: devAccess
+              Effect: Allow
+              Principal:
+                AWS:
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codepipeline-role-${region}
+                  - accountId: !FindInMap [ stages, dev, accountId ]
+                    region: !FindInMap [ stages, dev, region ]
+                    prefix: !FindInMap [ stages, dev, prefix ]
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codebuild-role-${region}
+                  - accountId: !FindInMap [ stages, dev, accountId ]
+                    region: !FindInMap [ stages, dev, region ]
+                    prefix: !FindInMap [ stages, dev, prefix ]
+              
+              Action:
+                - s3:Get*
+                - s3:Put*
+                - s3:ListBucket
+              Resource: 
+                - !Sub ${artifactBucket.Arn}/*
+                - !Sub ${artifactBucket.Arn}
+            - !Ref AWS::NoValue
+          
+          - !If 
+            - qaBootstraped
+            - Sid: qaAccess
+              Effect: Allow
+              Principal:
+                AWS:
+                  - !Sub 
+                    - arn:aws:iam::${accountId}:role/${projectName}-codepipeline-role-${region}
+                    - accountId: !FindInMap [ stages, qa, accountId ]
+                      region: !FindInMap [ stages, qa, region ]
+                  - !Sub 
+                    - arn:aws:iam::${accountId}:role/${projectName}-codebuild-role-${region}
+                    - accountId: !FindInMap [ stages, qa, accountId ]
+                      region: !FindInMap [ stages, qa, region ]
+              
+              Action:
+                - s3:Get*
+                - s3:Put*
+                - s3:ListBucket
+              Resource: 
+                - !Sub ${artifactBucket.Arn}/*
+                - !Sub ${artifactBucket.Arn}
+            - !Ref AWS::NoValue
+          
+          - !If 
+            - prdBootstraped
+            - Sid: prdAccess
+              Effect: Allow
+              Principal:
+                AWS:
+                  - !Sub 
+                    - arn:aws:iam::${accountId}:role/${projectName}-codepipeline-role-${region}
+                    - accountId: !FindInMap [ stages, prd, accountId ]
+                      region: !FindInMap [ stages, prd, region ]
+                  - !Sub 
+                    - arn:aws:iam::${accountId}:role/${projectName}-codebuild-role-${region}
+                    - accountId: !FindInMap [ stages, prd, accountId ]
+                      region: !FindInMap [ stages, prd, region ]
+              
+              Action:
+                - s3:Get*
+                - s3:Put*
+                - s3:ListBucket
+              Resource: 
+                - !Sub ${artifactBucket.Arn}/*
+                - !Sub ${artifactBucket.Arn}
+            - !Ref AWS::NoValue
+
+  deploymentS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${deploymentBucketName}-${stage}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption: 
+        ServerSideEncryptionConfiguration: 
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref sourceBucketKey
+      Tags:
+        - Key: Project
+          Value: !Ref projectName
+        - Key: Stage
+          Value: !Ref stage
+  
+  sourceBucketKey:
+    Type: AWS::KMS::Key
+    # Condition: deploymentAccount
+    Properties: 
+      Description: !Sub Key used to encrypt ${codePipelineSourceBucketName}-${stage} S3 bucket
+      EnableKeyRotation: false
+      Enabled: true
+      KeyPolicy:
+        Id:  !Sub ${codePipelineSourceBucketName}-${stage}-policy
+        Version: '2012-10-17'
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal:
+            AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+          Action: kms:*
+          Resource: "*"
+        - Sid: Allow use of the key
+          Effect: Allow
+          Principal:
+            AWS:
+              - !If
+                - deploymentAccount
+                - !GetAtt cicdUser.Arn
+                - !Ref AWS::NoValue
+              - !GetAtt codePipelineRole.Arn
+              - !GetAtt cloudFormationPipelineRole.Arn
+              - !GetAtt codeBuildRole.Arn
+          Action:
+          - kms:Encrypt
+          - kms:Decrypt
+          - kms:ReEncrypt*
+          - kms:GenerateDataKey*
+          - kms:DescribeKey
+          Resource: "*"
+
+        - !If
+          - sbxBootstraped
+          - Sid: sbx Access
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codepipeline-role-${region}
+                  - accountId: !FindInMap [ stages, sbx, accountId ]
+                    region: !FindInMap [ stages, sbx, region ]
+                    prefix: !FindInMap [ stages, sbx, prefix ]
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codebuild-role-${region}
+                  - accountId: !FindInMap [ stages, sbx, accountId ]
+                    region: !FindInMap [ stages, sbx, region ]
+                    prefix: !FindInMap [ stages, sbx, prefix ]
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+          - !Ref AWS::NoValue
+        - !If
+          - devBootstraped
+          - Sid: dev Access
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codepipeline-role-${region}
+                  - accountId: !FindInMap [ stages, dev, accountId ]
+                    region: !FindInMap [ stages, dev, region ]
+                    prefix: !FindInMap [ stages, dev, prefix ]
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codebuild-role-${region}
+                  - accountId: !FindInMap [ stages, dev, accountId ]
+                    region: !FindInMap [ stages, dev, region ]
+                    prefix: !FindInMap [ stages, dev, prefix ]
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+          - !Ref AWS::NoValue
+        
+        - !If
+          - qaBootstraped
+          - Sid: qa Access
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codepipeline-role-${region}
+                  - accountId: !FindInMap [ stages, qa, accountId ]
+                    region: !FindInMap [ stages, qa, region ]
+                    prefix: !FindInMap [ stages, qa, prefix ]
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codebuild-role-${region}
+                  - accountId: !FindInMap [ stages, qa, accountId ]
+                    region: !FindInMap [ stages, qa, region ]
+                    prefix: !FindInMap [ stages, qa, prefix ]
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+          - !Ref AWS::NoValue
+        
+        - !If
+          - prdBootstraped
+          - Sid: prd Access
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codepipeline-role-${region}
+                  - accountId: !FindInMap [ stages, prd, accountId ]
+                    region: !FindInMap [ stages, prd, region ]
+                    prefix: !FindInMap [ stages, prd, prefix ]
+                - !Sub 
+                  - arn:aws:iam::${accountId}:role/${prefix}-codebuild-role-${region}
+                  - accountId: !FindInMap [ stages, prd, accountId ]
+                    region: !FindInMap [ stages, prd, region ]
+                    prefix: !FindInMap [ stages, prd, prefix ]
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+          - !Ref AWS::NoValue
+
+      Tags: 
+        - Key: Project
+          Value: !Ref projectName
+        - Key: Stage
+          Value: !Ref stage
+  
+  sourceBucket:
+    Type: AWS::S3::Bucket
+    Condition: deploymentAccount
+    Properties:
+      BucketName: !Sub ${codePipelineSourceBucketName}-${stage}
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+        - Id: DeleteNoncurrentVersionIn7Days
+          Status: Enabled
+          NoncurrentVersionExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption: 
+        ServerSideEncryptionConfiguration: 
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref sourceBucketKey
+      Tags: 
+        - Key: Project
+          Value: !Ref projectName
+        - Key: Stage
+          Value: !Ref stage
+        
+  cicdUser:
+    Type: AWS::IAM::User
+    Condition: deploymentAccount
+    Properties:
+      UserName: !Sub ${projectName}-cicd-user-${stage}
+      Policies:
+        - 
+          PolicyName: !Sub ${projectName}-cicd-user-access-${stage}
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - kms:decrypt
+                  - kms:encrypt
+                  - kms:GenerateDataKey
+                  # - s3:GetObject
+                Resource: 
+                  - !Sub arn:aws:s3:::${codePipelineSourceBucketName}-${stage}/*
+                  - !Sub arn:aws:s3:::${artifactBucketName}-${stage}/*
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Resource:
+                  - !Sub arn:aws:s3:::${codePipelineSourceBucketName}-${stage}
+                  - !Sub arn:aws:s3:::${artifactBucketName}-${stage}/*
+      Tags: 
+        - Key: Project
+          Value: !Ref projectName
+        - Key: Stage
+          Value: !Ref stage
+
+  cicdUserCredentials:
+    Type: AWS::IAM::AccessKey
+    Condition: deploymentAccount
+    Properties: 
+      Status: Active 
+      UserName: !Ref cicdUser
+
+  cicdUserSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: deploymentAccount
+    Properties: 
+      Description: !Sub Secrets for cicd user on ${stage} stage.
+      KmsKeyId: !Ref sourceBucketKey
+      Name: !Sub ${projectName}-cicd-user-access-${stage}
+      SecretString: !Sub 
+        - '{"AccessKeyId":"${AccessKeyId}", 
+            "SecretAccessKey":"${SecretAccessKey}",
+            "bucketName":"${bucketName}",
+            "packageName":"${sourcePackageName}"}'
+        - AccessKeyId: !Ref cicdUserCredentials
+          SecretAccessKey: !GetAtt cicdUserCredentials.SecretAccessKey
+          bucketName: !Ref sourceBucket
+      Tags: 
+        - Key: Project
+          Value: !Ref projectName
+        - Key: Stage
+          Value: !Ref stage
+
+  codePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${projectName}-codepipeline-role-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Statement:
+          - !If
+            - deploymentAccount
+            -
+              Action:
+                - "sts:AssumeRole"
+              Effect: Allow
+              Principal:
+                Service: "codepipeline.amazonaws.com"
+            -
+              Action:
+                - "sts:AssumeRole"
+              Effect: Allow
+              Principal:
+                AWS: !Sub 
+                  - arn:aws:iam::${deploymentAccount}:role/${deploymentProjectName}-codepipeline-role-${deploymentRegion}
+                  - deploymentAccount: !FindInMap [ stages, all, accountId ]
+                    deploymentProjectName: !FindInMap [ stages, all, prefix ]
+                    deploymentRegion: !FindInMap [ stages, all, region ]
+      Policies:
+        -
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:GetBucketVersioning
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource: 
+                - !Sub arn:aws:s3:::${artifactBucketName}-*
+                - !Sub arn:aws:s3:::${artifactBucketName}-*/*
+                - !Sub arn:aws:s3:::${codePipelineSourceBucketName}-*
+                - !Sub arn:aws:s3:::${codePipelineSourceBucketName}-*/*
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                  - kms:ReEncrypt*
+                  - kms:Decrypt
+                Resource:
+                  - "*"
+              -
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ExecuteChangeSet
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:PutLogEvents
+                Resource: "*"
+              - 
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 
+                    - arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+                    - targetAccount: !FindInMap [ stages, sbx, accountId ]
+                      targetProjectName: !FindInMap [ stages, sbx, prefix ]
+                      targetRegion: !FindInMap [ stages, sbx, region ]
+                  - !Sub 
+                    - arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+                    - targetAccount: !FindInMap [ stages, dev, accountId ]
+                      targetProjectName: !FindInMap [ stages, dev, prefix ]
+                      targetRegion: !FindInMap [ stages, dev, region ]
+                  - !Sub 
+                    - arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+                    - targetAccount: !FindInMap [ stages, qa, accountId ]
+                      targetProjectName: !FindInMap [ stages, qa, prefix ]
+                      targetRegion: !FindInMap [ stages, qa, region ]
+                  - !Sub 
+                    - arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+                    - targetAccount: !FindInMap [ stages, prd, accountId ]
+                      targetProjectName: !FindInMap [ stages, prd, prefix ]
+                      targetRegion: !FindInMap [ stages, prd, region ]
+                  - !Sub 
+                    - arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+                    - targetAccount: !FindInMap [ stages, all, accountId ]
+                      targetProjectName: !FindInMap [ stages, all, prefix ]
+                      targetRegion: !FindInMap [ stages, all, region ]
+                  - !Sub 
+                    - arn:aws:iam::${targetAccount}:role/${targetProjectName}-cf-role-${targetRegion}
+                    - targetAccount: !FindInMap [ stages, all, accountId ]
+                      targetProjectName: !FindInMap [ stages, all, prefix ]
+                      targetRegion: !FindInMap [ stages, all, region ]
+
+          PolicyName: !Sub ${projectName}-codepipeline-policy
+  
+  cloudFormationPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${projectName}-cf-role-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Statement:
+          -
+            Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service: "cloudformation.amazonaws.com"
+      Policies:
+        -
+          PolicyName: !Sub ${projectName}-cloudformation-in-pipeline-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - 
+                Sid: ssmAccess
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:PutParameter
+                  - ssm:AddTagsToResource
+                  - ssm:DeleteParameter
+                  - ssm:DeleteParameters
+                  - ssm:RemoveTagsFromResource
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/global/*
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${projectName}/*
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${stage}/*
+              -
+                Sid: kmsOperations
+                Effect: Allow
+                Action:
+                  - kms:*
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - iam:*
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - cloudformation:*
+                Resource: 
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${projectName}*
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stackset/${projectName}*:*
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/${projectName}*/*
+              -
+                Effect: Allow
+                Action:
+                  - secretsmanager:*
+                Resource: 
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${projectName}*
+              -
+                Effect: Allow
+                Action:
+                  - codepipeline:* 
+                Resource: 
+                  - !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${projectName}*
+              -
+                Effect: Allow
+                Action:
+                  - codebuild:*
+                Resource: 
+                  - !Sub arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${projectName}*
+              -
+                Effect: Allow
+                Action:
+                  - codestar-notifications:* 
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:PutRetentionPolicy
+                  - logs:DeleteLogGroup
+                  - logs:PutLogEvents
+                  - logs:PutMetricFilter
+                  - logs:DeleteMetricFilter
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${deploymentBucketName}-*
+                  - !Sub arn:aws:s3:::${deploymentBucketName}-*/*
+                  - !Sub arn:aws:s3:::${artifactBucketName}-*
+                  - !Sub arn:aws:s3:::${artifactBucketName}-*/*
+              -
+                Effect: Allow
+                Action:
+                  - lambda:*
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:CreateTable
+                  - dynamodb:UpdateTable
+                  - dynamodb:DeleteTable
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:UpdateTimeToLive
+                Resource: "*"
+              - 
+                Effect: Allow
+                Action:
+                  - events:DescribeRule
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:RemoveTargets
+                  - events:PutTargets
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:DeleteBucketPolicy
+                  - s3:ListAllMyBuckets
+                  - s3:PutLifecycleConfiguration
+                  - s3:PutBucketVersioning
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:PutBucketPolicy
+                  - s3:GetBucketPolicy
+                  - s3:PutBucketAcl
+                  - s3:GetBucketAcl
+                  - s3:PutEncryptionConfiguration
+                  - s3:PutBucketNotification
+                  - s3:PutAccountPublicAccessBlock
+                  - s3:PutBucketTagging
+                  - s3:PutBucketLogging
+                  - s3:PutReplicationConfiguration
+                  - s3:GetReplicationConfiguration
+                Resource: "*"
+              
+  codeBuildRole:
+    # This role is used by CodeBuild to prepare and deploy Lambda Packages (zip files) and Glue Jobs scripts to infrastructure S3 buckets
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${projectName}-codebuild-role-${AWS::Region}
+      Tags: 
+        - Key: Project
+          Value: !Ref projectName
+        - Key: Stage
+          Value: !Ref stage
+      AssumeRolePolicyDocument:
+        Statement:
+          -
+            Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: "codebuild.amazonaws.com"
+      Policies:
+        -
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - 
+                Sid: ssmAccess
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:PutParameter
+                  - ssm:AddTagsToResource
+                  - ssm:DeleteParameter
+                  - ssm:DeleteParameters
+                  - ssm:RemoveTagsFromResource
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/global/*
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${projectName}/*
+              - Effect: Allow
+                Action:
+                  - s3:ListAllMyBuckets
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:*
+                Resource: 
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+                  - !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${projectName}-lambda-*/*
+              -
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:GetBucketACL
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub arn:aws:s3:::${artifactBucketName}-*
+                  - !Sub arn:aws:s3:::${artifactBucketName}-*/*
+                  - !Sub arn:aws:s3:::${codePipelineSourceBucketName}-*
+                  - !Sub arn:aws:s3:::${codePipelineSourceBucketName}-*/*
+                  - !Sub arn:aws:s3:::${deploymentBucketName}-*
+                  - !Sub arn:aws:s3:::${deploymentBucketName}-*/*
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                  - kms:ReEncrypt*
+                  - kms:Decrypt
+                Resource:
+                  - "*"
+              -
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: "*"
+              -
+                Sid: cloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:PutLogEvents
+                Resource: "*"
+              -
+                Effect: Allow
+                Action:
+                  - lambda:GetFunction
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:CreateEventSourceMapping
+                  - lambda:DeleteEventSourceMapping
+                  - lambda:GetEventSourceMapping
+                  - lambda:PublishLayerVersion
+                  - lambda:GetLayerVersion
+                  - lambda:DeleteLayerVersion
+                  - lambda:ListTags
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                Resource: "*"
+          PolicyName: !Sub ${projectName}-codebuild-policy-${stage}
+
+# SBX
+  sbxInfrastructurePipelineStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: sbxBootstrapedOnDeploymentAccount
+    DependsOn: 
+      - codePipelineRole
+      - cloudFormationPipelineRole
+    Properties: 
+      Parameters: 
+        stage: sbx
+        codePipelineSourceBucketName: !Sub /${projectName}/codePipelineSourceBucketName
+        artifactStoreLocation: !Ref artifactBucket
+        appSourcePackageName: !Sub ${projectName}-app.zip
+        pipelineSourcePackageName: !Sub ${projectName}-cicd.zip
+        targetAccount: !FindInMap [ stages, sbx, accountId ]
+        targetRegion: !FindInMap [ stages, sbx, region ]
+        targetProjectName: !FindInMap [ stages, sbx, prefix ]
+        artifactStoreEncryptionKeyId: !Ref sourceBucketKey
+        cicdUserArn: !GetAtt cicdUser.Arn
+        crossAccountRequiments: "yes"
+      Tags: 
+        - Key: Project
+          Value: !Ref projectName
+      # TemplateURL: !Sub https://${artifactBucket.RegionalDomainName}/cicd/sbx/cicd-infra-stage.template
+      TemplateURL: !Sub https://${artifactBucketName}-${stage}.s3.${AWS::Region}.amazonaws.com/cicd/sbx/cicd-infra-stage.template
+      TimeoutInMinutes: 20
+
+# DEV
+  devInfrastructurePipelineStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: devBootstrapedOnDeploymentAccount
+    DependsOn: 
+      - codePipelineRole
+      - cloudFormationPipelineRole
+    Properties: 
+      Parameters: 
+        stage: dev
+        codePipelineSourceBucketName: !Sub /${projectName}/codePipelineSourceBucketName
+        artifactStoreLocation: !Ref artifactBucket
+        appSourcePackageName: !Sub ${projectName}-app.zip
+        pipelineSourcePackageName: !Sub ${projectName}-cicd.zip
+        targetAccount: !FindInMap [ stages, dev, accountId ]
+        targetRegion: !FindInMap [ stages, dev, region ]
+        targetProjectName: !FindInMap [ stages, dev, prefix ]
+        artifactStoreEncryptionKeyId: !Ref sourceBucketKey
+        cicdUserArn: !GetAtt cicdUser.Arn
+        crossAccountRequiments: "yes"
+      Tags: 
+        - Key: Project
+          Value: !Ref projectName
+      # TemplateURL: !Sub https://${artifactBucket.RegionalDomainName}/cicd/dev/cicd-infra-stage.template
+      TemplateURL: !Sub https://${artifactBucketName}-${stage}.s3.${AWS::Region}.amazonaws.com/cicd/dev/cicd-infra-stage.template
+      TimeoutInMinutes: 20
+
+# QA
+  qaNewInfrastructurePipelineStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: qaBootstrapedOnDeploymentAccount
+    DependsOn: 
+      - codePipelineRole
+      - cloudFormationPipelineRole
+    Properties: 
+      Parameters: 
+        stage: qa
+        codePipelineSourceBucketName: !Sub /${projectName}/codePipelineSourceBucketName
+        artifactStoreLocation: !Ref artifactBucket
+        appSourcePackageName: !Sub ${projectName}-app.zip
+        pipelineSourcePackageName: !Sub ${projectName}-cicd.zip
+        targetAccount: !FindInMap [ stages, qa, accountId ]
+        targetRegion: !FindInMap [ stages, qa, region ]
+        targetProjectName: !FindInMap [ stages, qa, prefix ]
+        artifactStoreEncryptionKeyId: !Ref sourceBucketKey
+        cicdUserArn: !GetAtt cicdUser.Arn
+        crossAccountRequiments: "yes"
+      Tags: 
+        - Key: Project
+          Value: !Ref projectName
+      # TemplateURL: !Sub https://${artifactBucket.RegionalDomainName}/cicd/qa/cicd-infra-stage.template
+      TemplateURL: !Sub https://${artifactBucketName}-${stage}.s3.${AWS::Region}.amazonaws.com/cicd/qa/cicd-infra-stage.template
+      TimeoutInMinutes: 20
+
+# PRD
+  prdInfrastructurePipelineStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: prdBootstrapedOnDeploymentAccount
+    DependsOn: 
+      - codePipelineRole
+      - cloudFormationPipelineRole
+    Properties: 
+      Parameters: 
+        stage: prd
+        codePipelineSourceBucketName: !Sub /${projectName}/codePipelineSourceBucketName
+        artifactStoreLocation: !Ref artifactBucket
+        appSourcePackageName: !Sub ${projectName}.zip
+        pipelineSourcePackageName: none
+        targetAccount: !FindInMap [ stages, prd, accountId ]
+        targetRegion: !FindInMap [ stages, prd, region ]
+        targetProjectName: !FindInMap [ stages, prd, prefix ]
+        artifactStoreEncryptionKeyId: !Ref sourceBucketKey
+        cicdUserArn: !GetAtt cicdUser.Arn
+        crossAccountRequiments: "no"
+      Tags: 
+        - Key: Project
+          Value: !Ref projectName
+      # TemplateURL: !Sub https://${artifactBucket.RegionalDomainName}/cicd/prd/cicd-infra-stage.template
+      TemplateURL: !Sub https://${artifactBucketName}-${stage}.s3.${AWS::Region}.amazonaws.com/cicd/prd/cicd-infra-stage.template
+      TimeoutInMinutes: 20

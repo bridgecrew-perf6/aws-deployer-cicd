@@ -1,0 +1,365 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This stack provides all resources for stage provisioning (CICD User IAM Role, Stage pipeline)
+
+Parameters:
+  stage:
+    Type: String
+    Description: Stage Name
+    AllowedValues:
+    - all
+    - sbx
+    - dev
+    - qa
+    - prd
+
+  projectName:
+    Default: /aws-deployer/projectName
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: Project Name SSM Parameter
+
+  codePipelineSourceBucketName:
+    Default: /aws-deployer/codePipelineSourceBucketName
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: Name of S3 bucket where source code is kept
+
+  artifactStoreLocation:
+    Type: String
+    Description: S3 bucket name where CodePiepline artifacts are stored
+  
+  appSourcePackageName:
+    Type: String
+    Description: The Application source code package name (i.e. aws-deployer-app.zip)
+
+  pipelineSourcePackageName: 
+    Type: String
+    Description: The Pipeline source code package name (i.e. aws-deployer-cicd.zip)
+
+  targetAccount:
+    Type: String
+    Description: Account ID of Target account. The one where resources will be deployed
+
+  targetRegion:
+    Type: String
+    Description: Region to deploy resources to
+    Default: eu-west-1
+
+  targetProjectName:
+    Type: String
+    Description: target Project Name to deploy resources to
+    Default: XXX
+  
+  artifactStoreEncryptionKeyId:
+    Type: String
+    Description: KMS key ID for artifacts encryption
+
+  cicdUserArn:
+    Type: String
+    Description: ARN of CICD user for IAM Role trust relationship
+
+  crossAccountRequiments:
+    Default: "no"
+    Type: String
+    Description: This template is deploying on cross account?
+    AllowedValues:
+    - "no"
+    - "yes"
+    
+Conditions:
+  appSourcePackageNameProvided: !Not [ !Equals [ !Ref appSourcePackageName , none ] ]
+  pipelineSourcePackageNameProvided: !Not [ !Equals [ !Ref pipelineSourcePackageName , none ] ]
+  isSbx: !Equals [ !Ref stage , "sbx" ]
+  isDev: !Equals [ !Ref stage , "dev" ]
+  isQa: !Equals [ !Ref stage , "qa" ]
+  isPrd: !Equals [ !Ref stage , "prd" ]
+
+  deploymentAccount: !Equals [ !Ref crossAccountRequiments , "no" ]
+  crossAccount: !Equals [ !Ref crossAccountRequiments , "yes" ]
+
+  isMainAccAndPrdEnv: !And
+    - !Condition deploymentAccount
+    - !Condition isPrd
+
+  shouldRoleBeDeployed: !Or
+    - !Condition isMainAccAndPrdEnv
+    - !Condition crossAccount
+    
+Resources:
+  deploymentPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !If
+      - crossAccount
+      - !Sub ${projectName}-infra-pipeline-${stage}
+      - !Sub ${projectName}-infra-pipeline-local-${stage}
+      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/${projectName}-codepipeline-role-${AWS::Region}
+      RestartExecutionOnUpdate: false
+      ArtifactStore:
+        Location: !Ref artifactStoreLocation
+        Type: S3
+        EncryptionKey:
+          Id: !Ref artifactStoreEncryptionKeyId
+          Type: KMS
+      Stages:
+        - Name: Source
+          Actions:
+            - !If
+              - pipelineSourcePackageNameProvided
+              - Name: Pipeline
+                ActionTypeId:
+                  Category: Source
+                  Owner: AWS
+                  Version: '1'
+                  Provider: S3
+                OutputArtifacts:
+                  - Name: cicd
+                Configuration:
+                  S3Bucket: !Sub ${codePipelineSourceBucketName}-all
+                  S3ObjectKey: !Sub ${stage}/${pipelineSourcePackageName}
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - appSourcePackageNameProvided
+              - Name: Application
+                ActionTypeId:
+                  Category: Source
+                  Owner: AWS
+                  Version: '1'
+                  Provider: S3
+                OutputArtifacts:
+                  - Name: app
+                Configuration:
+                  S3Bucket: !Sub ${codePipelineSourceBucketName}-all
+                  S3ObjectKey: !Sub ${stage}/${appSourcePackageName}
+                RunOrder: 2
+              - !Ref AWS::NoValue
+
+        - Name: UpdateCiCdPipelines
+          Actions:
+
+            - !If
+              - crossAccount
+              - 
+                Name: !Sub ${stage}CrossAccountParameters
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Version: '1'
+                  Provider: CloudFormation
+                Configuration:
+                  StackName: !Sub ${targetProjectName}-global-names
+                  ActionMode: CREATE_UPDATE
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  ParameterOverrides: !Sub 
+                    - '{"projectName":"${projectNameParam}"}'
+                    - projectNameParam: !Ref targetProjectName
+                  TemplatePath: cicd::names.template
+                  RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-cf-role-${targetRegion}
+                Region: !Ref targetRegion
+                RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+                InputArtifacts:
+                  - Name: cicd
+                RunOrder: 5
+              - !Ref AWS::NoValue
+
+            - !If
+              - crossAccount
+              - 
+                Name: !Sub ${stage}CrossAccountCiCdResources
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Version: '1'
+                  Provider: CloudFormation
+                Configuration:
+                  StackName: !Sub ${projectName}-global-cicd
+                  ActionMode: CREATE_UPDATE
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  ParameterOverrides: !Sub 
+                    - '{"stage":"${stageParam}", 
+                        "projectName":"${projectNameParam}",
+                        "deploymentBucketName":"${deploymentBucketNameParam}",
+                        "artifactBucketName":"${artifactBucketNameParam}",
+                        "codePipelineSourceBucketName":"${codePipelineSourceBucketNameParam}",
+                        "crossAccountRequiments":"yes"}'
+                    - stageParam: !Ref stage
+                      projectNameParam: !Sub /${targetProjectName}/projectName
+                      deploymentBucketNameParam: !Sub /${targetProjectName}/deploymentBucketName
+                      artifactBucketNameParam: !Sub /${targetProjectName}/artifactBucketName
+                      codePipelineSourceBucketNameParam: !Sub /${targetProjectName}/codePipelineSourceBucketName
+                  TemplatePath: cicd::cicd.template
+                  RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-cf-role-${targetRegion}
+                Region: !Ref targetRegion
+                RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+                InputArtifacts:
+                  - Name: cicd
+                RunOrder: 10
+              - !Ref AWS::NoValue
+
+            - 
+              Name: DeployAccountParameters
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: '1'
+                Provider: CloudFormation
+              Configuration:
+                StackName: !Sub ${projectName}-global-names
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_NAMED_IAM
+                ParameterOverrides: !Sub 
+                  - '{"projectName":"${projectNameParam}"}'
+                  - projectNameParam: !Ref projectName
+                TemplatePath: cicd::names.template
+                RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/${projectName}-cf-role-${AWS::Region}
+              Region: !Ref AWS::Region
+              InputArtifacts:
+                - Name: cicd
+              RunOrder: 10
+
+            - 
+              Name: DeployAccountCiCdResourcesPipelines
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: '1'
+                Provider: CloudFormation
+              Configuration:
+                StackName: !Sub ${projectName}-global-cicd
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_NAMED_IAM
+                ParameterOverrides: !Sub 
+                  - '{"stage":"${stageParam}", 
+                      "projectName":"${projectNameParam}",
+                      "deploymentBucketName":"${deploymentBucketNameParam}",
+                      "artifactBucketName":"${artifactBucketNameParam}",
+                      "codePipelineSourceBucketName":"${codePipelineSourceBucketNameParam}",
+                      "crossAccountRequiments":"no"}'
+                  - stageParam: all
+                    projectNameParam: !Sub /${projectName}/projectName
+                    deploymentBucketNameParam: !Sub /${projectName}/deploymentBucketName
+                    artifactBucketNameParam: !Sub /${projectName}/artifactBucketName
+                    codePipelineSourceBucketNameParam: !Sub /${projectName}/codePipelineSourceBucketName
+                TemplatePath: cicd::cicd.template
+                RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/${projectName}-cf-role-${AWS::Region}
+              Region: !Ref AWS::Region
+              InputArtifacts:
+                - Name: cicd
+              RunOrder: 15
+
+        - Name: DeploymentApp
+          Actions:
+            -
+              Name: parameters
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: '1'
+                Provider: CloudFormation
+              Configuration:
+                StackName: !Sub ${targetProjectName}-parameters-${stage}
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_NAMED_IAM
+                # TemplateConfiguration: !Sub app::parameters/${stage}/parameters.json
+                ParameterOverrides: !Sub 
+                  - '{"stage":"${stageParam}", 
+                      "projectName":"${projectNameParam}"}'
+                  - stageParam: !Ref stage
+                    projectNameParam: !Sub /${targetProjectName}/projectName
+                TemplatePath: app::parameters.template
+                RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-cf-role-${targetRegion}
+              Region: !Ref targetRegion
+              RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+              InputArtifacts:
+                - Name: app
+              RunOrder: 10
+            # -
+            #   Name: lambdasCommon
+            #   ActionTypeId:
+            #     Category: Deploy
+            #     Owner: AWS
+            #     Version: '1'
+            #     Provider: CloudFormation
+            #   Configuration:
+            #     StackName: !Sub ${targetProjectName}-lambdas-${stage}
+            #     ActionMode: CREATE_UPDATE
+            #     Capabilities: CAPABILITY_NAMED_IAM
+            #     TemplateConfiguration: !Sub app::parameters/${stage}/lambdas.json
+            #     # ParameterOverrides: !Sub 
+            #     #   - '{"stage":"${stageParam}", 
+            #     #       "projectName":"${projectNameParam}",
+            #     #       "deploymentBucketName":"${deploymentBucketNameParam}",
+            #     #       "commonLibraryLambdaLayerArn":"${commonLibraryLambdaLayerArnParam}",
+            #     #       "notificationsTopicArn":"${notificationsTopicArnParam}"}'
+            #     #   - stageParam: !Ref stage
+            #     #     projectNameParam: !Sub /${targetProjectName}/projectName
+            #     #     deploymentBucketNameParam: !Sub /${targetProjectName}/deploymentBucketName
+            #     #     commonLibraryLambdaLayerArnParam: !Sub /${stage}/common-library-lambda-layer-arn
+            #     #     notificationsTopicArnParam: !Sub /el-notifies-devops/${stage}/export/notificationsTopicArn
+            #     TemplatePath: app::lambdas.template
+            #     RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-cf-role-${targetRegion}
+            #   Region: !Ref targetRegion
+            #   RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+            #   InputArtifacts:
+            #     - Name: app
+            #   RunOrder: 20
+
+            # -
+            #   Name: codeBuildProjects
+            #   ActionTypeId:
+            #     Category: Deploy
+            #     Owner: AWS
+            #     Version: '1'
+            #     Provider: CloudFormation
+            #   Configuration:
+            #     StackName: !Sub ${targetProjectName}-codeBuildProjects-${stage}
+            #     ActionMode: CREATE_UPDATE
+            #     Capabilities: CAPABILITY_NAMED_IAM
+            #     # TemplateConfiguration: !Sub app::parameters/${stage}/codeBuildProjects.json
+            #     ParameterOverrides: !Sub 
+            #       - '{"stage":"${stageParam}"}'
+            #       - stageParam: !Ref stage
+            #     TemplatePath: app::codeBuildProjects.template
+            #     RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-cf-role-${targetRegion}
+            #   Region: !Ref targetRegion
+            #   RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+            #   InputArtifacts:
+            #     - Name: app
+            #   RunOrder: 20
+
+            # -
+            #   Name: BuildLambdas
+            #   InputArtifacts:
+            #     - Name: app
+            #   ActionTypeId:
+            #     Category: Build
+            #     Owner: AWS
+            #     Version: '1'
+            #     Provider: CodeBuild
+            #   Configuration:
+            #     ProjectName: !Sub ${targetProjectName}-build-${stage}
+            #     EnvironmentVariables: !Sub '[{"name":"STAGE","value":"${stage}","type":"PLAINTEXT"}]'
+            #   Region: !Ref targetRegion
+            #   RoleArn: !Sub arn:aws:iam::${targetAccount}:role/${targetProjectName}-codepipeline-role-${targetRegion}
+            #   RunOrder: 21
+
+  # pipelineNotifications:
+  #   Type: AWS::CodeStarNotifications::NotificationRule
+  #   Properties: 
+  #     DetailType: FULL
+  #     EventTypeIds: 
+  #       - codepipeline-pipeline-pipeline-execution-succeeded
+  #       - codepipeline-pipeline-pipeline-execution-resumed
+  #       - codepipeline-pipeline-pipeline-execution-superseded
+  #       - codepipeline-pipeline-pipeline-execution-started
+  #       - codepipeline-pipeline-pipeline-execution-canceled
+  #       - codepipeline-pipeline-pipeline-execution-failed
+  #     Name: !Sub ${projectName}-${deploymentPipeline}-${stage}
+  #     Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${deploymentPipeline}
+  #     Status: ENABLED
+  #     Tags: 
+  #       Project: !Ref projectName
+  #       Stage: prd
+  #     Targets: 
+  #       - TargetAddress: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:notifies-devops-notifications-prd
+  #         TargetType: SNS

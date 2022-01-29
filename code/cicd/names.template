@@ -1,0 +1,51 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Names for the resources
+
+Parameters:
+  projectName:
+    Type: String
+    Description: Project Name
+
+Conditions:
+  isDeploymentAccount: !Equals [!Ref AWS::AccountId, "871238486811"]
+
+Resources:
+  projectNameParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Project name
+      Name: !Sub /${projectName}/projectName
+      Type: String
+      Value: !Ref projectName
+      Tier: Standard
+
+  deploymentBucketName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Bucket name for deployment
+      Name: !Sub /${projectName}/deploymentBucketName
+      Type: String
+      Value: !If
+        - isDeploymentAccount
+        - !Sub ${projectName}-deployment
+        - !Sub ${projectName}-deployment-${AWS::AccountId}
+      Tier: Standard
+
+  artifactBucketName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Bucket name for artifacts
+      Name: !Sub /${projectName}/artifactBucketName
+      Type: String
+      Value: !Sub ${projectName}-artifact-bucket
+      Tier: Standard
+
+  codePipelineSourceBucketName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: CodePipeline source bucket name
+      Name: !Sub /${projectName}/codePipelineSourceBucketName
+      Type: String
+      Value: !Sub ${projectName}-pipeline-source-bucket
+      Tier: Standard
