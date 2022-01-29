@@ -14,12 +14,12 @@ Parameters:
     - prd
 
   projectName:
-    Default: /aws-deployer/projectName
+    Default: /ex-deployer/projectName
     Type: AWS::SSM::Parameter::Value<String>
     Description: Project Name SSM Parameter
 
   codePipelineSourceBucketName:
-    Default: /aws-deployer/codePipelineSourceBucketName
+    Default: /ex-deployer/codePipelineSourceBucketName
     Type: AWS::SSM::Parameter::Value<String>
     Description: Name of S3 bucket where source code is kept
 
@@ -29,11 +29,11 @@ Parameters:
   
   appSourcePackageName:
     Type: String
-    Description: The Application source code package name (i.e. aws-deployer-app.zip)
+    Description: The Application source code package name (i.e. ex-deployer-app.zip)
 
   pipelineSourcePackageName: 
     Type: String
-    Description: The Pipeline source code package name (i.e. aws-deployer-cicd.zip)
+    Description: The Pipeline source code package name (i.e. ex-deployer-cicd.zip)
 
   targetAccount:
     Type: String

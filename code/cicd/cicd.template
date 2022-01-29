@@ -15,22 +15,22 @@ Parameters:
     - sbx
 
   projectName:
-    Default: /aws-deployer/projectName
+    Default: /ex-deployer/projectName
     Type: AWS::SSM::Parameter::Value<String>
     Description: Project Name SSM Parameter
 
   deploymentBucketName:
-    Default: /aws-deployer/deploymentBucketName
+    Default: /ex-deployer/deploymentBucketName
     Type: AWS::SSM::Parameter::Value<String>
     Description: Lambda S3 Bucket name SSM Parameter
   
   artifactBucketName:
-    Default: /aws-deployer/artifactBucketName
+    Default: /ex-deployer/artifactBucketName
     Type: AWS::SSM::Parameter::Value<String>
     Description: Lambda S3 Bucket name SSM Parameter
 
   codePipelineSourceBucketName:
-    Default: /aws-deployer/codePipelineSourceBucketName
+    Default: /ex-deployer/codePipelineSourceBucketName
     Type: AWS::SSM::Parameter::Value<String>
     Description: Lambda S3 Bucket name SSM Parameter
 
@@ -78,27 +78,27 @@ Mappings:
       accountId: 749918991571
       region: eu-west-1
       bootstrapped: "false"
-      prefix: "aws-deployer"
+      prefix: "ex-deployer"
     dev:
       accountId: 749918991571
       region: eu-west-1
       bootstrapped: "false"
-      prefix: "aws-deployer"
+      prefix: "ex-deployer"
     qa:
       accountId: 749918991571
       region: us-east-1
       bootstrapped: "false"
-      prefix: "aws-deployer"
+      prefix: "ex-deployer"
     prd:
       accountId: 749918991571
       region: eu-west-2
       bootstrapped: "false"
-      prefix: "aws-deployer"
+      prefix: "ex-deployer"
     all:
       accountId: 749918991571
       region: eu-central-1
       bootstrapped: "false"
-      prefix: "aws-deployer"
+      prefix: "ex-deployer"
 
 Resources:
   artifactBucket:
@@ -474,8 +474,7 @@ Resources:
       SecretString: !Sub 
         - '{"AccessKeyId":"${AccessKeyId}", 
             "SecretAccessKey":"${SecretAccessKey}",
-            "bucketName":"${bucketName}",
-            "packageName":"${sourcePackageName}"}'
+            "bucketName":"${bucketName}"'
         - AccessKeyId: !Ref cicdUserCredentials
           SecretAccessKey: !GetAtt cicdUserCredentials.SecretAccessKey
           bucketName: !Ref sourceBucket

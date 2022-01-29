@@ -13,7 +13,7 @@ from libEl import libEl
 
 parser = argparse.ArgumentParser()
 DIR_APP = os.path.dirname(os.path.realpath(__file__)).rsplit('/', 1)[0]+"/"
-DEFAULT_NAME_PROJECT = "aws-deployer"
+DEFAULT_NAME_PROJECT = "ex-deployer"
 
 def init():
   global PARAMS, AWS_CICD, AWS_APP
@@ -57,9 +57,9 @@ def init():
   ##################
   ## STEPS TO DEPLOY
   ##################
-  # first_deploy()
+  first_deploy()
   # update_cicd()
-  send_zips()
+  # send_zips()
 
   ## END
 
@@ -86,10 +86,6 @@ def first_deploy():
       template_file=DIR_APP+'code/cicd/cicd.template',
       parameters_array={
         "stage":AWS_CICD.stage,
-        "sbxInfrastructureKeyId":"none",
-        "devInfrastructureKeyId":"none",
-        "qaInfrastructureKeyId":"/qa/infrastructureKeyId",
-        "prdInfrastructureKeyId":"/prd/infrastructureKeyId",
         "crossAccountRequiments":"no"
         },
       deploy_type="create"
@@ -104,10 +100,6 @@ def first_deploy():
         "deploymentBucketName":f"/{AWS_APP.prefix}/deploymentBucketName",
         "artifactBucketName":f"/{AWS_APP.prefix}/artifactBucketName",
         "codePipelineSourceBucketName":f"/{AWS_APP.prefix}/codePipelineSourceBucketName",
-        "sbxInfrastructureKeyId": "/sbx/infrastructureKeyId" if AWS_APP.stage == "sbx" else "none",
-        "devInfrastructureKeyId": "/dev/infrastructureKeyId" if AWS_APP.stage == "dev" else "none",
-        "qaInfrastructureKeyId": "/qa/infrastructureKeyId" if AWS_APP.stage == "qa" else "none",
-        "prdInfrastructureKeyId": "/prd/infrastructureKeyId" if AWS_APP.stage == "prd" else "none",
         "crossAccountRequiments":"yes"
         },
       deploy_type="create"
@@ -138,10 +130,6 @@ def update_cicd():
           "deploymentBucketName":f"/{AWS_APP.prefix}/deploymentBucketName",
           "artifactBucketName":f"/{AWS_APP.prefix}/artifactBucketName",
           "codePipelineSourceBucketName":f"/{AWS_APP.prefix}/codePipelineSourceBucketName",
-          "sbxInfrastructureKeyId": "/sbx/infrastructureKeyId" if AWS_APP.stage == "sbx" else "none",
-          "devInfrastructureKeyId": "/dev/infrastructureKeyId" if AWS_APP.stage == "dev" else "none",
-          "qaInfrastructureKeyId": "/qa/infrastructureKeyId" if AWS_APP.stage == "qa" else "none",
-          "prdInfrastructureKeyId": "/prd/infrastructureKeyId" if AWS_APP.stage == "prd" else "none",
           "crossAccountRequiments":"yes"
           },
         deploy_type="update"
@@ -152,10 +140,6 @@ def update_cicd():
       template_file=DIR_APP+'code/cicd/cicd.template',
       parameters_array={
         "stage":AWS_CICD.stage,
-        "sbxInfrastructureKeyId":"none",
-        "devInfrastructureKeyId":"none",
-        "qaInfrastructureKeyId":"/qa/infrastructureKeyId",
-        "prdInfrastructureKeyId":"/prd/infrastructureKeyId",
         "crossAccountRequiments":"no"
         },
       deploy_type="update"
